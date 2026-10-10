@@ -1,0 +1,47 @@
+{
+  "name": "anima_voice",
+  "display_name": "Anima 语音通话",
+  "version": "1.0.0",
+  "description": "独立的 Anima 语音通话 Chatter，支持本地 ASR 与私聊临时接管。",
+  "author": "Anima",
+  "license": "AGPL-3.0",
+  "entry_point": "plugin.py",
+  "min_core_version": "1.2.0-alpha",
+  "api_version": {
+    "chat_api": "1.0.0",
+    "adapter_api": "1.0.0",
+    "event_api": "1.0.0",
+    "llm_api": "1.0.0",
+    "log_api": "1.0.0",
+    "prompt_api": "1.0.0",
+    "send_api": "1.0.0",
+    "service_api": "1.0.0",
+    "stream_api": "2.0.0"
+  },
+  "dependencies": {
+    "plugins": ["tts_voice_plugin-neo", "neo_default_chatter"],
+    "components": [
+      "neo_default_chatter:service:chat_core",
+      "tts_voice_plugin-neo:service:speech"
+    ]
+  },
+  "python_dependencies": ["funasr>=1.2.0", "numpy>=2.0.0", "sounddevice>=0.5.0", "soundfile>=0.12.1", "torch>=2.0.0", "torchaudio>=2.0.0", "transformers>=5.8.0", "tokenizers>=0.22.2,<0.23.0", "modelscope>=1.17.0", "huggingface-hub>=1.0.0", "keyboard>=0.13.5"],
+  "include": [
+    {"component_type": "adapter", "component_name": "voice_microphone", "dependencies": []},
+    {"component_type": "chatter", "component_name": "anima_voice", "dependencies": ["neo_default_chatter:service:chat_core"]},
+    {"component_type": "action", "component_name": "say", "dependencies": ["tts_voice_plugin-neo:service:speech"]},
+    {"component_type": "action", "component_name": "start_voice_call", "dependencies": []},
+    {"component_type": "action", "component_name": "end_voice_call", "dependencies": []},
+    {"component_type": "action", "component_name": "pass_and_wait", "dependencies": []},
+    {"component_type": "command", "component_name": "voice", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_preprocess", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_inject_unreads", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_inject_usables", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_create_request", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_fetch_unreads", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_format_unread_line", "dependencies": []},
+    {"component_type": "event_handler", "component_name": "anima_voice_build_history_text", "dependencies": []}
+  ],
+  "categories": ["chat"],
+  "tags": ["voice", "chatter", "asr", "tts"]
+}
