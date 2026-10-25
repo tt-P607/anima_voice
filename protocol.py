@@ -7,6 +7,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, cast
 
 from src.app.plugin_system.api import adapter_api
+from src.core.components.types import PlatformSendResult
 
 from .config import AnimaVoiceConfig
 from .constants import MICROPHONE_ADAPTER
@@ -36,7 +37,7 @@ class LocalMicrophone(Protocol):
 
     async def send_played_voice(
         self, audio_data: bytes, *, stream_id: str, text: str,
-    ) -> bool:
+    ) -> PlatformSendResult:
         """记录已播放语音的媒体、历史和事件，不重复播放。"""
         ...
 

@@ -35,6 +35,10 @@ class PCMStream(Protocol):
 class SpeechService(Protocol):
     """通话依赖的 TTS Service 最小接口。"""
 
+    def get_capabilities(self) -> Any:
+        """返回共享合成服务当前的参数能力。"""
+        ...
+
     async def synthesize(self, request: TTSRequest) -> Any:
         """返回带音频数据的完整合成响应。"""
         ...

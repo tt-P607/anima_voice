@@ -8,6 +8,8 @@ import wave
 from collections.abc import AsyncIterator
 from typing import Any
 
+from src.app.plugin_system.api.send_api import format_send_result
+
 from .._internal_compat import create_task
 from ..protocol import AnimaVoicePluginView, get_asr_output
 from .backend import TTSRequest, get_tts_service
@@ -128,8 +130,12 @@ async def play_streaming_speech(
                 wav.setframerate(48000)
                 wav.writeframes(recorded)
             text = " ".join(body for body, _ in segments)
-            if not await asr.send_played_voice(audio.getvalue(), stream_id=stream_id, text=text):
-                raise RuntimeError("已播放语音未成功记录到消息历史")
+            result = await asr.send_played_voice(
+                audio.getvalue(), stream_id=stream_id, text=text
+            )
+            sent, receipt = format_send_result(result, "已播放语音已记录到消息历史")
+            if not sent:
+                raise RuntimeError(receipt)
         return len(segments)
     finally:
         if not receiver.done():

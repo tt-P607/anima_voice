@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from src.app.plugin_system.base import BaseConfig, Field, SectionBase, config_section
 
@@ -116,8 +116,11 @@ class AsrSection(SectionBase):
 
 @config_section("voice_call", title="语音通话")
 class VoiceCallSection(SectionBase):
-    """通话静默超时配置。"""
+    """QQ 通话输入模式和静默超时。"""
 
+    input_mode: Literal["asr", "multimodal"] = Field(
+        default="asr", description="asr 为本地识别文本，multimodal 为直接向支持音频的 KFC 模型提交 WAV"
+    )
     timeout_seconds: float = Field(default=300.0, description="静默超时秒数")
 
 

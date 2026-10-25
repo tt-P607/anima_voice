@@ -17,12 +17,14 @@ from plugins.anima_voice.actions import (
     SayAction,
     _tts_schema,
 )
+from plugins.anima_voice.asr import VoiceMicrophoneAdapter
 from plugins.anima_voice.chatter.core import AnimaVoiceChatter
 from plugins.anima_voice.config import AnimaVoiceConfig
 from plugins.anima_voice.runtime import call_state
 from plugins.anima_voice.speech import streaming
 from plugins.anima_voice.voice_call import lifecycle
 from plugins.anima_voice.voice_call.identity import resolve_caller_identity
+from src.core.components.types import PlatformSendStatus
 
 
 class _Usable:
@@ -708,3 +710,58 @@ def test_resolve_caller_identity_returns_empty_without_counterpart() -> None:
     )()
 
     assert resolve_caller_identity(stream) == ("", "")
+
+
+@pytest.mark.asyncio
+async def test_local_adapter_reports_playback_and_deduplicates_played_voice() -> None:
+    """外发音频真实播放后回 SENT，已由 Action 播放的回声仅确认而不重播。"""
+
+    adapter = object.__new__(VoiceMicrophoneAdapter)
+    adapter._played_voice_message_ids = {"already-played"}
+    adapter._external_playback_count = 0
+    adapter._playback_until = 0.0
+    played: list[bytes] = []
+
+    class Player:
+        async def play_audio(self, audio: bytes) -> None:
+            played.append(audio)
+
+    adapter.plugin = SimpleNamespace(audio_player=Player())
+    envelope = {
+        "message_info": {"message_id": "already-played"},
+        "message_segment": [{"type": "voice", "data": "YQ=="}],
+    }
+
+    duplicate = await adapter._send_platform_message(envelope)
+    assert duplicate.status is PlatformSendStatus.SENT
+    assert played == []
+
+    adapter._played_voice_message_ids.clear()
+    playback = await adapter._send_platform_message(envelope)
+    assert playback.status is PlatformSendStatus.SENT
+    assert played == [b"a"]
+
+
+@pytest.mark.asyncio
+async def test_local_adapter_rejects_unplayable_voice_and_text() -> None:
+    """无法解码的外发音频与本地文本均返回明确失败，而非空值成功。"""
+
+    adapter = object.__new__(VoiceMicrophoneAdapter)
+    adapter._played_voice_message_ids = set()
+    adapter._external_playback_count = 0
+    adapter._playback_until = 0.0
+    adapter.plugin = SimpleNamespace(audio_player=SimpleNamespace())
+
+    voice = await adapter._send_platform_message({
+        "message_info": {},
+        "message_segment": [{"type": "voice", "data": "not-base64"}],
+    })
+    text = await adapter._send_platform_message({
+        "message_info": {},
+        "message_segment": [{"type": "text", "data": "hello"}],
+    })
+
+    assert voice.status is PlatformSendStatus.FAILED
+    assert "没有可播放" in (voice.error or "")
+    assert text.status is PlatformSendStatus.FAILED
+    assert "不输出文本" in (text.error or "")

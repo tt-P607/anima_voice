@@ -15,6 +15,7 @@ from plugins.anima_voice.config import AnimaVoiceConfig
 from plugins.anima_voice.runtime import call_state
 from plugins.anima_voice.speech import backend as backend_module
 from plugins.anima_voice.speech import streaming
+from src.core.components.types import PlatformSendResult, PlatformSendStatus
 
 
 class _Player:
@@ -62,9 +63,9 @@ async def test_say_routes_local_asr_to_voice_and_platform_to_player(
 ) -> None:
     """local_asr 不要求 active call 并发语音消息，平台流必须本机播放。"""
 
-    async def send_voice(*args: Any, **kwargs: Any) -> bool:
+    async def send_voice_result(*args: Any, **kwargs: Any) -> PlatformSendResult:
         sent.append((args, kwargs))
-        return True
+        return PlatformSendResult(success=True, status=PlatformSendStatus.SENT)
 
     @asynccontextmanager
     async def no_heartbeat(_: str) -> Any:
@@ -83,7 +84,7 @@ async def test_say_routes_local_asr_to_voice_and_platform_to_player(
     monkeypatch.setattr(
         say, "synthesize_audio", _audio_artifact
     )
-    monkeypatch.setattr(say.send_api, "send_voice", send_voice)
+    monkeypatch.setattr(say.send_api, "send_voice_result", send_voice_result)
     monkeypatch.setattr(say, "keep_watchdog_alive", no_heartbeat)
     if platform == "qq":
         @asynccontextmanager
@@ -141,17 +142,23 @@ async def test_say_does_not_report_success_without_output(
     async def synthesize_audio(*_: Any) -> Any:
         return SimpleNamespace(audio=None if empty_audio else b"audio")
 
-    async def send_voice(*_: Any, **__: Any) -> bool:
-        return False
+    async def send_voice_result(*_: Any, **__: Any) -> PlatformSendResult:
+        return PlatformSendResult(
+            success=False, status=PlatformSendStatus.UNKNOWN, error="平台超时"
+        )
 
     plugin = SimpleNamespace(
         audio_player=_Player(), tts_capabilities=None, config=_complete_audio_config()
     )
     action = SayAction(SimpleNamespace(stream_id="stream", platform="local_asr"), plugin)
     monkeypatch.setattr(say, "synthesize_audio", synthesize_audio)
-    monkeypatch.setattr(say.send_api, "send_voice", send_voice)
+    monkeypatch.setattr(say.send_api, "send_voice_result", send_voice_result)
 
-    assert await action.execute("hello") == (False, "已输出 0/1 段语音")
+    expected = (
+        (False, "TTS 未生成可播放音频") if empty_audio else
+        (False, "0/1 段已确认发送；发送结果未确认：平台超时；不要自动重试")
+    )
+    assert await action.execute("hello") == expected
 
 
 @pytest.mark.asyncio
@@ -268,24 +275,34 @@ async def test_text_on_failure_requires_explicit_config_and_preserves_failure(
     """文本失败行为只在明确开启时生效，不虚报语音播放成功。"""
 
     sent: list[str] = []
+    text_receipts: list[PlatformSendResult] = []
 
     async def synthesize_audio(*_: Any) -> Any:
         if raises:
             raise RuntimeError("TTS unavailable")
         return SimpleNamespace(audio=None)
 
-    async def send_text(text: str, **_: Any) -> bool:
+    async def send_text_result(text: str, **_: Any) -> PlatformSendResult:
         sent.append(text)
-        return True
+        result = PlatformSendResult(
+            success=False, status=PlatformSendStatus.UNKNOWN, error="回执超时"
+        )
+        text_receipts.append(result)
+        return result
 
     config = _complete_audio_config()
     config.tts.emit_text_on_tts_failure = emit_text
     plugin = SimpleNamespace(audio_player=_Player(), tts_capabilities=None, config=config)
     action = SayAction(SimpleNamespace(stream_id="stream", platform="local_asr"), plugin)
     monkeypatch.setattr(say, "synthesize_audio", synthesize_audio)
-    monkeypatch.setattr(say.send_api, "send_text", send_text)
-    assert (await action.execute("hello"))[0] is False
+    monkeypatch.setattr(say.send_api, "send_text_result", send_text_result)
+    result = await action.execute("hello")
+    assert result[0] is False
     assert sent == (["hello"] if emit_text else [])
+    if emit_text:
+        assert "降级文字发送未确认" in result[1]
+        assert "回执超时" in result[1]
+    assert len(text_receipts) == int(emit_text)
 
 
 @pytest.mark.asyncio
@@ -339,10 +356,12 @@ async def test_shared_pcm_provider_starts_before_eof_and_records_once(
                 first_write.set()
             return sum(len(block) // 2 for block in writes)
 
-        async def send_played_voice(self, audio: bytes, **kwargs: Any) -> bool:
+        async def send_played_voice(
+            self, audio: bytes, **kwargs: Any
+        ) -> PlatformSendResult:
             assert audio.startswith(b"RIFF")
             calls.append(("record", kwargs))
-            return True
+            return PlatformSendResult(success=True, status=PlatformSendStatus.SENT)
 
     def create(coro: Any, _: str) -> Any:
         handle = SimpleNamespace(task=loop.create_task(coro))
@@ -445,10 +464,10 @@ async def test_say_execute_uses_shared_pcm_streaming_branch(
                 frames += len(chunk) // 2
             return frames
 
-        async def send_played_voice(self, audio: bytes, **kwargs: Any) -> bool:
+        async def send_played_voice(self, audio: bytes, **kwargs: Any) -> PlatformSendResult:
             assert audio.startswith(b"RIFF")
             calls.append(("record", kwargs))
-            return True
+            return PlatformSendResult(success=True)
 
     config = AnimaVoiceConfig()
     config.tts.streaming_enabled = True

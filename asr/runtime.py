@@ -18,6 +18,7 @@ from mofox_wire import MessageEnvelope
 from src.app.plugin_system.api.log_api import get_logger
 from src.app.plugin_system.base import BaseAdapter
 from src.app.plugin_system.types import Message, MessageType
+from src.core.components.types import PlatformSendResult, PlatformSendStatus
 
 from .. import _internal_compat
 from ..config import AnimaVoiceConfig
@@ -91,16 +92,17 @@ class VoiceMicrophoneAdapter(BaseAdapter):
         _ = raw
         return None
 
-    async def _send_platform_message(self, envelope: MessageEnvelope) -> None:
+    async def _send_platform_message(self, envelope: MessageEnvelope) -> PlatformSendResult:
         """消费本地平台外发语音，避免重复播放已主动输出的语音。"""
 
         message_info = envelope.get("message_info") or {}
         message_id = str(message_info.get("message_id") or "")
         if message_id and message_id in self._played_voice_message_ids:
             self._played_voice_message_ids.discard(message_id)
-            return
-        if await self._play_voice_envelope(envelope):
-            return
+            return PlatformSendResult(
+                success=True, message_id=message_id, status=PlatformSendStatus.SENT
+            )
+        return await self._play_voice_envelope(envelope)
 
     async def get_bot_info(self) -> dict[str, Any]:
         """返回本地 ASR 的 Bot 身份。"""
@@ -589,13 +591,16 @@ class VoiceMicrophoneAdapter(BaseAdapter):
         *,
         stream_id: str,
         text: str,
-    ) -> bool:
+    ) -> PlatformSendResult:
         """发送并入库已播放的语音，避免 adapter 再次播放。"""
 
-        from src.app.plugin_system.api.send_api import send_message
+        from src.app.plugin_system.api.send_api import send_message_result
 
         if not audio_data or not stream_id:
-            return False
+            return PlatformSendResult(
+                success=False, error="已播放语音缺少音频或目标流",
+                status=PlatformSendStatus.FAILED,
+            )
         message_id = f"anima-voice-{uuid.uuid4()}"
         self._played_voice_message_ids.add(message_id)
         label = f"[语音:{text.strip()}]" if text.strip() else "[语音]"
@@ -619,11 +624,17 @@ class VoiceMicrophoneAdapter(BaseAdapter):
             stream_id=stream_id,
         )
         try:
-            return await send_message(message)
-        finally:
+            result = await send_message_result(message)
+        except BaseException:
             self._played_voice_message_ids.discard(message_id)
+            raise
+        if result.status in {
+            PlatformSendStatus.FAILED, PlatformSendStatus.INTERCEPTED,
+        }:
+            self._played_voice_message_ids.discard(message_id)
+        return result
 
-    async def _play_voice_envelope(self, envelope: MessageEnvelope) -> bool:
+    async def _play_voice_envelope(self, envelope: MessageEnvelope) -> PlatformSendResult:
         """提取普通外发 voice 音频并通过自有 AudioPlayer 播放。"""
 
         for segment in envelope.get("message_segment") or []:
@@ -645,10 +656,23 @@ class VoiceMicrophoneAdapter(BaseAdapter):
                 if audio is None and isinstance(path, str):
                     audio = self._read_audio_file(path)
             if audio is not None:
-                async with self.suppress_microphone_during_playback():
-                    await self._get_audio_player().play_audio(audio)
-            return True
-        return False
+                try:
+                    async with self.suppress_microphone_during_playback():
+                        await self._get_audio_player().play_audio(audio)
+                except (RuntimeError, ValueError, OSError) as error:
+                    return PlatformSendResult(
+                        success=False, error=f"本机语音播放失败：{error}",
+                        status=PlatformSendStatus.FAILED,
+                    )
+                return PlatformSendResult(success=True, status=PlatformSendStatus.SENT)
+            return PlatformSendResult(
+                success=False, error="外发语音没有可播放的音频数据",
+                status=PlatformSendStatus.FAILED,
+            )
+        return PlatformSendResult(
+            success=False, error="本地 ASR 适配器不输出文本消息",
+            status=PlatformSendStatus.FAILED,
+        )
 
     def _get_audio_player(self) -> Any:
         """使用插件唯一播放器，避免本地监听和平台通话重复占用设备。"""

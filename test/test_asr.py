@@ -25,6 +25,7 @@ from plugins.anima_voice.asr import runtime as asr_runtime
 from plugins.anima_voice.config import AnimaVoiceConfig
 from plugins.anima_voice.protocol import require_plugin
 from plugins.anima_voice.speech import streaming
+from src.app.plugin_system.base import PlatformSendResult, PlatformSendStatus
 
 
 def test_config_sections_are_single_typed_source_for_asr_and_audio() -> None:
@@ -131,14 +132,14 @@ async def test_pcm_pipeline_uses_real_owned_adapter_and_closes_only_its_request(
                     await release_output.wait()
             return sum(len(block) // 2 for block in writes)
 
-    async def send_message(message: Any) -> bool:
+    async def send_message(message: Any) -> PlatformSendResult:
         assert adapter._external_playback_count == 0
         assert message.message_id in adapter._played_voice_message_ids
         messages.append(message)
         await adapter._send_platform_message({
             "message_info": {"message_id": message.message_id}, "message_segment": [],
         })
-        return True
+        return PlatformSendResult(success=True)
 
     def create(coro: Any, _: str) -> Any:
         task = asyncio.get_running_loop().create_task(coro)
@@ -150,7 +151,7 @@ async def test_pcm_pipeline_uses_real_owned_adapter_and_closes_only_its_request(
     monkeypatch.setattr(streaming, "get_tts_service", lambda: Service())
     monkeypatch.setattr(streaming, "get_asr_output", lambda: adapter)
     monkeypatch.setattr(streaming, "create_task", create)
-    monkeypatch.setattr("src.app.plugin_system.api.send_api.send_message", send_message)
+    monkeypatch.setattr("src.app.plugin_system.api.send_api.send_message_result", send_message)
     execution = asyncio.get_running_loop().create_task(streaming.play_streaming_speech(
         view=require_plugin(plugin), stream_id="owned-stream", platform="local_asr",
         segments=[("first", 0.01), ("second", 0.02)], tts_params={},
@@ -295,24 +296,26 @@ async def test_send_played_voice_uses_public_message_api_and_is_not_replayed(
 
     sent_messages: list[Any] = []
 
-    async def fake_send_message(message: Any) -> bool:
+    async def fake_send_message(message: Any) -> PlatformSendResult:
         sent_messages.append(message)
         assert message.message_id in adapter._played_voice_message_ids
         await adapter._send_platform_message(
             {"message_info": {"message_id": message.message_id}, "message_segment": []}
         )
-        return True
+        return PlatformSendResult(success=True)
 
     monkeypatch.setattr(
-        "src.app.plugin_system.api.send_api.send_message", fake_send_message
+        "src.app.plugin_system.api.send_api.send_message_result", fake_send_message
     )
     adapter = VoiceMicrophoneAdapter(
         AsyncMock(), SimpleNamespace(config=AnimaVoiceConfig())
     )
 
-    assert await adapter.send_played_voice(
+    result = await adapter.send_played_voice(
         b"audio", stream_id="stream", text="你好"
     )
+    assert result.status is PlatformSendStatus.SENT
+    assert result.success is True
     message = sent_messages[0]
     assert message.message_type.value == "voice"
     assert message.content["media"][0]["data"] == "base64|YXVkaW8="
@@ -344,10 +347,13 @@ async def test_record_failure_releases_played_message_registration(
     """发送被拦截或失败时不遗留已播放消息标记。"""
 
     monkeypatch.setattr(
-        "src.app.plugin_system.api.send_api.send_message", AsyncMock(return_value=False),
+        "src.app.plugin_system.api.send_api.send_message_result",
+        AsyncMock(return_value=PlatformSendResult(success=False, error="example refusal")),
     )
     adapter = VoiceMicrophoneAdapter(AsyncMock(), SimpleNamespace(config=AnimaVoiceConfig()))
-    assert not await adapter.send_played_voice(b"audio", stream_id="stream", text="hello")
+    result = await adapter.send_played_voice(b"audio", stream_id="stream", text="hello")
+    assert result.success is False
+    assert result.status is PlatformSendStatus.FAILED
     assert not adapter._played_voice_message_ids
 
 
